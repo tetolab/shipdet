@@ -152,3 +152,66 @@ class ShipData(Dataset):
             img = np.logical_or(img, self._get_image_mask(idx)).astype(float)
 
         return img.astype(np.uint8) * 255
+
+
+class SubmissionToTensor(object):
+    """Convert ndarrays in sample to Tensors."""
+
+    def __init__(self, dimensions=None):
+        self.dimensions = dimensions
+
+    def __call__(self, sample):
+        image = sample['image']
+        # swap color axis because
+        # numpy image: H x W x C
+        # torch image: C X H X W
+        if self.dimensions:
+            image= self.resize_image(image)
+
+        image = self.transpose_and_scale_image(image)
+        return {'image': torch.from_numpy(image), 'image_name': sample['image_name']}
+
+    @staticmethod
+    def transpose_and_scale_image(image):
+        return image.transpose((2, 0, 1)).astype(np.float32) / 255
+
+    def resize_image(self, image):
+        height, width = self.dimensions
+        image = transform.resize(image, (height, width), anti_aliasing=True, preserve_range=True)
+        return image
+
+    @staticmethod
+    def binarize_mask(loc_image):
+        loc_image[loc_image > 0] = 255
+
+
+class SubmissionShipData(Dataset):
+    def __init__(self, image_width, image_height, use_cache=True, dropna=True):
+        self.image_width = image_width
+        self.image_height = image_height
+        self.use_cache = use_cache
+        self.cache = {}
+        self.ships_dataframe = pd.read_csv('data/sample_submission_v2.csv')
+        self.transform = transforms.Compose([SubmissionToTensor((image_height, image_width))])
+
+    def __len__(self):
+        return len(self.ships_dataframe) - 1
+
+    def _get_blank_sample(self):
+        image = np.zeros((self.image_height, self.image_width, 3))
+        loc_image = rle_decode([], original_width, original_height)
+        return {"image": image, "loc_image": loc_image, 'contains_ship': 0}
+
+    def __getitem__(self, idx):
+        if self.use_cache and idx in self.cache:
+            return self.cache.get(idx)
+
+        image_name = self.ships_dataframe.iloc[idx, 0]
+        image_path = 'data/test_v2/' + image_name
+        image = io.imread(image_path)
+        sample = {'image': image, 'image_name': image_name}
+
+        sample = self.transform(sample)
+        if self.use_cache:
+            self.cache[idx] = sample
+        return sample
